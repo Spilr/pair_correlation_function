@@ -1,0 +1,408 @@
+---
+title: "Pair Correlation Analysis"
+author: "syslo"
+date: "2023-01-26"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+## Overview
+  The purpose of this code is to generate a graph depicting the pair correlation function of bcells with other cells in the tumor environment
+  
+## Loading Packages
+```{r load-pkgs}
+# install.packages("raster")
+# install.packages("plyr")
+# install.packages("terra")
+
+library(raster)
+library(terra)
+library(plyr)
+library(data.table)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+```
+
+## File Setup
+File system is setup as follows:
+Main_directory
+  - PCF.Rproj (this R project)
+  - data (directory containing multiplex data files)
+  - reference (directory containing "conditions.csv", similar to sample sheet)
+  - results (output directory for saving results)
+  - source_code (directory containing function scripts)
+  
+```{r}
+# Set working directory to main directory
+data_loc <- "./data"
+
+sample_id <- list.files(path = data_loc, pattern = "*.txt", full.names = TRUE)
+conditions <- as.data.frame(sample_id) %>%
+  mutate(group = "")
+write.csv(conditions, file = "./reference/conditions.csv")
+
+# Open conditions.csv in Excel and define sample groups
+# For this analysis, we do not define separate sample groups so all samples are defined with group "base"
+
+# RUN THE CODE BELOW EACH TIME YOU RE-RUN PCF ANALYSIS
+conditions <- read.csv("./reference/conditions.csv") %>%
+  dplyr::select(sample_id, group)
+groups <- unique(conditions$group)
+```
+
+# PCF Analysis
+The following are the code for the pcf analyses. The key for each analysis and functions file is as follows:
+•	A = All tumor samples using B cells as the focus corresponding to nearby TAMs, Tumor cells, T cells, and Microglia
+•	B = All tumor samples using B cells as the focus corresponding to nearby TGFB+ TAMs, Tumor cells, T cells, and Microglia
+•	C = All tumor samples using B cells as the focus corresponding to nearby TGFB+ TAMs and Tumor cells
+
+## PCF Analysis A
+This analysis will contain all samples. We use B cells as focus point, comparing to TAMs, tumor cells, t cells, and microglia.
+```{r pcf_a}
+# Load packages
+library(doParallel)
+library(parallel)
+library(foreach)
+
+# Make sure this is the right functions file
+source(file = "./source_code/01_functions_a.R")
+
+no_cores <- detectCores()
+registerDoParallel(makeCluster(no_cores))
+
+
+for (i in groups) {
+  df <- paste(i, "df", sep = "_")
+  
+  ls <- conditions %>%
+    filter(group == i) %>%
+    select_('sample_id')
+  
+  assign(df,
+         foreach(id = 1:nrow(ls)) %dopar% read_mpx(ls, id))
+
+  df <- get(df)
+
+  # TAM PCF
+  pcf1 <- paste(i, "pcf_tam", sep="_")
+
+  assign(pcf1,
+       foreach(id = 1:length(df)) %dopar% pcf_tam(df[[id]]))
+  
+  pcf1_all <- get(pcf1)
+  pcf1_sum <- head(pcf1_all[[1]],n=200)
+  for (j in 2:length(pcf1_all)){
+    pcf1_sum <- pcf1_sum + head(pcf1_all[[j]],n=200)
+  }
+  pcf1_avg <- pcf1_sum/length(pcf1_all)
+  pcf1_avg <- pcf1_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  assign(pcf1, pcf1_avg)
+  
+  
+  # TUMOR PCF
+  pcf2 <- paste(i, "pcf_tumor", sep="_")
+
+  assign(pcf2,
+       foreach(id = 1:length(df)) %dopar% pcf_tumor(df[[id]]))
+  
+  pcf2_all <- get(pcf2)
+  pcf2_sum <- head(pcf2_all[[1]],n=200)
+  for (j in 2:length(pcf2_all)){
+    pcf2_sum <- pcf2_sum + head(pcf2_all[[j]],n=200)
+  }
+  pcf2_avg <- pcf2_sum/length(pcf2_all)
+  pcf2_avg <- pcf2_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  assign(pcf2, pcf2_avg)
+
+  # T_CELL PCF
+  pcf3 <- paste(i, "pcf_tcell", sep="_")
+
+  assign(pcf3,
+       foreach(id = 1:length(df)) %dopar% pcf_tcell(df[[id]]))
+
+  pcf3_all <- get(pcf3)
+  pcf3_sum <- head(pcf3_all[[1]],n=200)
+  for (j in 2:length(pcf3_all)){
+    pcf3_sum <- pcf3_sum + head(pcf3_all[[j]],n=200)
+  }
+  pcf3_avg <- pcf3_sum/length(pcf3_all)
+  pcf3_avg <- pcf3_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  
+  assign(pcf3, pcf3_avg)
+  
+  
+  # MICROGLIA PCF
+  pcf4 <- paste(i, "pcf_mcg", sep="_")
+
+  assign(pcf4,
+       foreach(id = 1:length(df)) %dopar% pcf_mcg(df[[id]]))
+
+  pcf4_all <- get(pcf4)
+  pcf4_sum <- head(pcf4_all[[1]],n=200)
+  for (j in 2:length(pcf4_all)){
+    pcf4_sum <- pcf4_sum + head(pcf4_all[[j]],n=200)
+  }
+  pcf4_avg <- pcf4_sum/length(pcf4_all)
+  pcf4_avg <- pcf4_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  assign(pcf4, pcf4_avg)
+
+  
+  # -------------------------------GRAPHING-------------------------------
+  
+  plotto <- paste(i,"plot_pcf",sep="_")
+  assign(plotto, 
+         ggplot() +
+    # B Cells and TAMs
+    geom_line(data = pcf1_avg, aes(x=radius, y=mean), color = "yellow4", lwd = 1.5) +
+    geom_ribbon(data = pcf1_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "yellow", color = "transparent") +
+      
+    # B Cells and Tumor Cells
+    geom_line(data = pcf2_avg, aes(x=radius, y=mean), color = "cyan4", lwd = 1.5) +
+    geom_ribbon(data = pcf2_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "cyan", color = "transparent") +
+  
+    # B Cells and T Cells
+    geom_line(data = pcf3_avg, aes(x=radius, y=mean), color = "red4", lwd = 1.5) +
+    geom_ribbon(data = pcf3_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "red", color = "transparent") +
+  
+    # B Cells and Microglia
+    geom_line(data = pcf4_avg, aes(x=radius, y=mean), color = "green4", lwd = 1.5) +
+    geom_ribbon(data = pcf4_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "green", color = "transparent") +
+      
+    labs(x = "Radius (" * mu~"m)", y = "Cell Density", color = "white") +
+    coord_cartesian(xlim = c(0, 30), ylim = c(0,600)) +
+    theme_classic())
+}
+
+stopImplicitCluster()
+```
+
+## PCF Analysis B
+This analysis will contain all samples. We use B cells as focus point, comparing to TGFB+ TAMs, tumor cells, t cells, and microglia.
+```{r pcf_b}
+# Load packages
+library(doParallel)
+library(parallel)
+library(foreach)
+
+# Make sure this is the right functions file
+source(file = "./source_code/02_functions_b.R")
+
+no_cores <- detectCores()
+registerDoParallel(makeCluster(no_cores))
+
+
+for (i in groups) {
+  df <- paste(i, "df", sep = "_")
+  
+  ls <- conditions %>%
+    filter(group == i) %>%
+    select_('sample_id')
+  
+  assign(df,
+         foreach(id = 1:nrow(ls)) %dopar% read_mpx(ls, id))
+
+  df <- get(df)
+
+  # TAM PCF
+  pcf1 <- paste(i, "pcf_tam", sep="_")
+
+  assign(pcf1,
+       foreach(id = 1:length(df)) %dopar% pcf_tam(df[[id]]))
+  
+  pcf1_all <- get(pcf1)
+  pcf1_sum <- head(pcf1_all[[1]],n=200)
+  for (j in 2:length(pcf1_all)){
+    pcf1_sum <- pcf1_sum + head(pcf1_all[[j]],n=200)
+  }
+  pcf1_avg <- pcf1_sum/length(pcf1_all)
+  pcf1_avg <- pcf1_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  assign(pcf1, pcf1_avg)
+  
+  
+  # TUMOR PCF
+  pcf2 <- paste(i, "pcf_tumor", sep="_")
+
+  assign(pcf2,
+       foreach(id = 1:length(df)) %dopar% pcf_tumor(df[[id]]))
+  
+  pcf2_all <- get(pcf2)
+  pcf2_sum <- head(pcf2_all[[1]],n=200)
+  for (j in 2:length(pcf2_all)){
+    pcf2_sum <- pcf2_sum + head(pcf2_all[[j]],n=200)
+  }
+  pcf2_avg <- pcf2_sum/length(pcf2_all)
+  pcf2_avg <- pcf2_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  assign(pcf2, pcf2_avg)
+
+  # T_CELL PCF
+  pcf3 <- paste(i, "pcf_tcell", sep="_")
+
+  assign(pcf3,
+       foreach(id = 1:length(df)) %dopar% pcf_tcell(df[[id]]))
+
+  pcf3_all <- get(pcf3)
+  pcf3_sum <- head(pcf3_all[[1]],n=200)
+  for (j in 2:length(pcf3_all)){
+    pcf3_sum <- pcf3_sum + head(pcf3_all[[j]],n=200)
+  }
+  pcf3_avg <- pcf3_sum/length(pcf3_all)
+  pcf3_avg <- pcf3_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  
+  assign(pcf3, pcf3_avg)
+  
+  
+  # MICROGLIA PCF
+  pcf4 <- paste(i, "pcf_mcg", sep="_")
+
+  assign(pcf4,
+       foreach(id = 1:length(df)) %dopar% pcf_mcg(df[[id]]))
+
+  pcf4_all <- get(pcf4)
+  pcf4_sum <- head(pcf4_all[[1]],n=200)
+  for (j in 2:length(pcf4_all)){
+    pcf4_sum <- pcf4_sum + head(pcf4_all[[j]],n=200)
+  }
+  pcf4_avg <- pcf4_sum/length(pcf4_all)
+  pcf4_avg <- pcf4_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  assign(pcf4, pcf4_avg)
+
+  
+  # -------------------------------GRAPHING-------------------------------
+  
+  plotto <- paste(i,"plot_pcf",sep="_")
+  assign(plotto, 
+         ggplot() +
+    # B Cells and TAMs
+    geom_line(data = pcf1_avg, aes(x=radius, y=mean), color = "yellow4", lwd = 1.5) +
+    geom_ribbon(data = pcf1_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "yellow", color = "transparent") +
+      
+    # B Cells and Tumor Cells
+    geom_line(data = pcf2_avg, aes(x=radius, y=mean), color = "cyan4", lwd = 1.5) +
+    geom_ribbon(data = pcf2_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "cyan", color = "transparent") +
+  
+    # B Cells and T Cells
+    geom_line(data = pcf3_avg, aes(x=radius, y=mean), color = "red4", lwd = 1.5) +
+    geom_ribbon(data = pcf3_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "red", color = "transparent") +
+  
+    # B Cells and Microglia
+    geom_line(data = pcf4_avg, aes(x=radius, y=mean), color = "green4", lwd = 1.5) +
+    geom_ribbon(data = pcf4_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "green", color = "transparent") +
+      
+    labs(x = "Radius (" * mu~"m)", y = "Cell Density", color = "white") +
+    coord_cartesian(xlim = c(0, 30), ylim = c(0,600)) +
+    theme_classic())
+}
+
+stopImplicitCluster()
+```
+
+## PCF Analysis C
+This analysis will contain all samples. We use B cells as focus point, comparing to TGFB+ TAMs and tumor cells.
+```{r pcf_c}
+# Load packages
+library(doParallel)
+library(parallel)
+library(foreach)
+
+# Make sure this is the right functions file
+source(file = "./source_code/02_functions_b.R")
+
+no_cores <- detectCores()
+registerDoParallel(makeCluster(no_cores))
+
+
+for (i in groups) {
+  df <- paste(i, "df", sep = "_")
+  
+  ls <- conditions %>%
+    filter(group == i) %>%
+    select_('sample_id')
+  
+  assign(df,
+         foreach(id = 1:nrow(ls)) %dopar% read_mpx(ls, id))
+
+  df <- get(df)
+
+  # TAM PCF
+  pcf1 <- paste(i, "pcf_tam", sep="_")
+
+  assign(pcf1,
+       foreach(id = 1:length(df)) %dopar% pcf_tam(df[[id]]))
+  
+  pcf1_all <- get(pcf1)
+  pcf1_sum <- head(pcf1_all[[1]],n=200)
+  for (j in 2:length(pcf1_all)){
+    pcf1_sum <- pcf1_sum + head(pcf1_all[[j]],n=200)
+  }
+  pcf1_avg <- pcf1_sum/length(pcf1_all)
+  pcf1_avg <- pcf1_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  assign(pcf1, pcf1_avg)
+  
+  
+  # TUMOR PCF
+  pcf2 <- paste(i, "pcf_tumor", sep="_")
+
+  assign(pcf2,
+       foreach(id = 1:length(df)) %dopar% pcf_tumor(df[[id]]))
+  
+  pcf2_all <- get(pcf2)
+  pcf2_sum <- head(pcf2_all[[1]],n=200)
+  for (j in 2:length(pcf2_all)){
+    pcf2_sum <- pcf2_sum + head(pcf2_all[[j]],n=200)
+  }
+  pcf2_avg <- pcf2_sum/length(pcf2_all)
+  pcf2_avg <- pcf2_avg %>%
+    mutate(
+      minc = mean - sd,
+      maxc = mean + sd)
+  assign(pcf2, pcf2_avg)
+
+  
+  # -------------------------------GRAPHING-------------------------------
+  
+  tmp_plot <- paste(i,"plot_pcf",sep="_")
+  assign(tmp_plot, 
+         ggplot() +
+    # B Cells and TAMs
+    geom_line(data = pcf1_avg, aes(x=radius, y=mean), color = "yellow4", lwd = 1.5) +
+    geom_ribbon(data = pcf1_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "yellow", color = "transparent") +
+      
+    # B Cells and Tumor Cells
+    geom_line(data = pcf2_avg, aes(x=radius, y=mean), color = "cyan4", lwd = 1.5) +
+    geom_ribbon(data = pcf2_avg, aes(x=radius, y=mean, ymin = minc, ymax = maxc), alpha = 0.5, fill = "cyan", color = "transparent") +
+  
+    labs(x = "Radius (" * mu~"m)", y = "Cell Density", color = "white") +
+    coord_cartesian(xlim = c(0, 30), ylim = c(0,600)) +
+    theme_classic())
+}
+
+stopImplicitCluster()
+```
